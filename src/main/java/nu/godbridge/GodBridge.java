@@ -1,5 +1,7 @@
 package nu.godbridge;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.Random;
 
 import net.minecraft.client.Minecraft;
@@ -12,6 +14,7 @@ import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.common.Mod.EventHandler;
 import net.minecraftforge.fml.common.event.FMLInitializationEvent;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
+import net.minecraftforge.fml.relauncher.ReflectionHelper;
 import net.minecraftforge.fml.common.gameevent.TickEvent;
 import org.lwjgl.input.Keyboard;
 
@@ -21,6 +24,7 @@ public class GodBridge {
     static final int   KEY       = Keyboard.KEY_Z;
     static final float PITCH     = 75.6f;  // FILL: tune if blocks don't land on the edge
     static final float SMOOTH    = 0.35f;  // 1.0 = instant snap
+    static final float CPS       = 15f;    // block placements per second (tick-capped at 20)
     static final int   JUMP_MIN  = 6;
     static final int   JUMP_MAX  = 8;      // inclusive
     static final int   JUMP_HOLD = 2;      // ticks
@@ -32,9 +36,14 @@ public class GodBridge {
     private float lockYaw;
     private double lastX, lastZ, travelled;
     private int target, jumpTicks;
+    private double clickAcc;
+    private Method rightClick;
+    private Field delayTimer;
 
     @EventHandler
     public void init(FMLInitializationEvent e) {
+        rightClick = ReflectionHelper.findMethod(Minecraft.class, mc, new String[]{"rightClickMouse", "func_147121_ag"});
+        delayTimer = ReflectionHelper.findField(Minecraft.class, "rightClickDelayTimer", "field_71467_ac");
         MinecraftForge.EVENT_BUS.register(this);
     }
 
@@ -67,8 +76,14 @@ public class GodBridge {
         GameSettings gs = mc.gameSettings;
         set(gs.keyBindBack, true);
         set(gs.keyBindRight, true);   // S+D, swap to keyBindLeft for S+A
-        set(gs.keyBindUseItem, true);
         set(gs.keyBindJump, jumpTicks > 0);
+
+        // own click loop, vanilla hold-RMB is capped at 5/s by rightClickDelayTimer
+        clickAcc += CPS / 20.0;
+        while (clickAcc >= 1.0) {
+            clickAcc -= 1.0;
+            click();
+        }
         if (jumpTicks > 0) jumpTicks--;
     }
 
@@ -79,6 +94,7 @@ public class GodBridge {
         lastZ = p.posZ;
         travelled = 0;
         jumpTicks = 0;
+        clickAcc = 0;
         target = nextTarget();
     }
 
@@ -87,8 +103,15 @@ public class GodBridge {
         GameSettings gs = mc.gameSettings;
         set(gs.keyBindBack, false);
         set(gs.keyBindRight, false);
-        set(gs.keyBindUseItem, false);
         set(gs.keyBindJump, false);
+    }
+
+    private void click() {
+        try {
+            delayTimer.setInt(mc, 0);
+            rightClick.invoke(mc);
+        } catch (Exception ignored) {
+        }
     }
 
     private int nextTarget() {
