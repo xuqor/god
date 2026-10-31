@@ -10,6 +10,7 @@ import net.minecraft.util.BlockPos;
 import net.minecraft.util.EnumFacing;
 import net.minecraft.util.MathHelper;
 import net.minecraft.util.MovementInputFromOptions;
+import net.minecraft.util.MovingObjectPosition;
 import net.minecraft.util.Vec3;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.fml.client.registry.ClientRegistry;
@@ -20,12 +21,14 @@ import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 import net.minecraftforge.fml.common.gameevent.TickEvent;
 import org.lwjgl.input.Keyboard;
 
-// Snapping rotations mid-air is exactly what Watchdog/Grim style checks flag, use it on your own server or singleplayer
-// Real telly: sprint-jump forward, turn back in the air and place under/behind you, turn forward again before landing, jump again.
+// Telly: sprint-jump forward, turn back in the air, fill the bridge from its end up to the cell under your feet, turn forward before landing, jump again.
+// Never builds ahead of you. Every block is placed through a real ray from your eye along the rotation the server already has.
+// Snapping camera mid-air is still visible to rotation checks, use it on your own server or singleplayer.
 @Mod(modid = "godbridge", version = "1.0", acceptedMinecraftVersions = "[1.8.9]", clientSideOnly = true)
 public class GodBridge {
-    static final int    LEAD   = 3;     // cells built ahead of the player's cell
-    static final int    BACK   = 4;     // cells scanned behind it (stay inside server reach)
+    static final int    BACK   = 4;     // lane cells scanned behind the cell under your (predicted) feet
+    static final double PRED   = 2.0;   // ticks of momentum used to find the cell you will stand over
+    static final double REACH  = 4.4;   // stay under the 4.5 block placement ray
     static final double LAND_H = 0.7;   // feet height above the bridge at which the camera turns forward again
     static final float  LOOK_BACK_PITCH = 75f;
 
@@ -36,10 +39,8 @@ public class GodBridge {
     private int ax, az, bridgeY;
     private float laneYaw;
 
-    // block aimed last tick, placed this tick (rotation packet is already out by then, like a real click)
-    private BlockPos pCell, pNb;
-    private EnumFacing pFace;
-    private Vec3 pHit;
+    // block aimed last tick, placed this tick through a fresh ray (the rotation packet for it is already out)
+    private BlockPos pCell;
 
     @EventHandler
     public void init(FMLInitializationEvent e) {
@@ -63,9 +64,10 @@ public class GodBridge {
             return;
         }
 
-        boolean landing = !p.onGround && p.motionY < 0 && p.posY - (bridgeY + 1) <= LAND_H;
+        // about to land on solid bridge: camera forward, sprint on, no placing
+        BlockPos under = new BlockPos(MathHelper.floor_double(p.posX), bridgeY, MathHelper.floor_double(p.posZ));
+        boolean landing = !p.onGround && p.motionY < 0 && p.posY - (bridgeY + 1) <= LAND_H && !mc.theWorld.isAirBlock(under);
         if (p.onGround || landing) {
-            // ground / about to land: camera forward, sprint on, no placing
             pCell = null;
             p.rotationYaw += MathHelper.wrapAngleTo180_float(laneYaw - p.rotationYaw);
             p.setSprinting(true);
@@ -74,19 +76,12 @@ public class GodBridge {
 
         // airborne: place what was aimed last tick, then aim at the next block, camera looking back
         if (pCell != null) {
-            ItemStack st = p.getHeldItem();
-            if (st != null && mc.theWorld.isAirBlock(pCell) && !mc.theWorld.isAirBlock(pNb)
-                    && mc.playerController.onPlayerRightClick(p, mc.theWorld, st, pNb, pFace, pHit)) {
-                p.swingItem();
-            }
+            tryPlace(p);
             pCell = null;
         }
-        if (findTarget()) {
-            aimAt(p, pHit);
-        } else {
-            p.rotationYaw += MathHelper.wrapAngleTo180_float(laneYaw + 180f - p.rotationYaw);
-            p.rotationPitch = LOOK_BACK_PITCH;
-        }
+        if (findTarget(p)) return;
+        p.rotationYaw += MathHelper.wrapAngleTo180_float(laneYaw + 180f - p.rotationYaw);
+        p.rotationPitch = LOOK_BACK_PITCH;
     }
 
     // forced movement toward the lane whatever the camera yaw is: solve vanilla moveFlying for (forward, strafe)
@@ -125,35 +120,53 @@ public class GodBridge {
         pCell = null;
     }
 
-    // first free lane cell (scanning from behind) that touches a solid block, so the bridge grows from its end
-    private boolean findTarget() {
-        EntityPlayerSP p = mc.thePlayer;
-        int cx = MathHelper.floor_double(p.posX), cz = MathHelper.floor_double(p.posZ);
+    // first free lane cell at or behind the cell under the predicted feet that touches a solid block, scanning from the back
+    // so the bridge grows from its end. Rotates the camera onto that block's face for the next tick.
+    private boolean findTarget(EntityPlayerSP p) {
+        int cx = MathHelper.floor_double(p.posX + p.motionX * PRED);
+        int cz = MathHelper.floor_double(p.posZ + p.motionZ * PRED);
+        // eye position next tick (air friction 0.91, gravity 0.08 then 0.98)
+        double ex = p.posX + p.motionX * 0.91;
+        double ey = p.posY + (p.motionY - 0.08) * 0.98 + p.getEyeHeight();
+        double ez = p.posZ + p.motionZ * 0.91;
         EnumFacing[] order = {EnumFacing.DOWN, EnumFacing.NORTH, EnumFacing.SOUTH, EnumFacing.WEST, EnumFacing.EAST};
-        for (int k = -BACK; k <= LEAD; k++) {
+
+        for (int k = -BACK; k <= 0; k++) {
             BlockPos bp = new BlockPos(cx + ax * k, bridgeY, cz + az * k);
             if (!mc.theWorld.isAirBlock(bp)) continue;
             for (EnumFacing f : order) {
                 BlockPos nb = bp.offset(f);
                 if (mc.theWorld.isAirBlock(nb) || mc.theWorld.getBlockState(nb).getBlock().getMaterial().isLiquid()) continue;
                 EnumFacing face = f.getOpposite(); // face of the neighbour that touches bp
+                double hx = nb.getX() + 0.5 + face.getFrontOffsetX() * 0.5;
+                double hy = nb.getY() + 0.5 + face.getFrontOffsetY() * 0.5;
+                double hz = nb.getZ() + 0.5 + face.getFrontOffsetZ() * 0.5;
+                double dx = hx - ex, dy = hy - ey, dz = hz - ez;
+                if (Math.sqrt(dx * dx + dy * dy + dz * dz) > REACH) continue;
+
+                float yaw = (float) (Math.atan2(dz, dx) * 180.0 / Math.PI) - 90f;
+                float pitch = (float) -(Math.atan2(dy, Math.hypot(dx, dz)) * 180.0 / Math.PI);
+                p.rotationYaw += MathHelper.wrapAngleTo180_float(yaw - p.rotationYaw);
+                p.rotationPitch = MathHelper.clamp_float(pitch, -90f, 90f);
                 pCell = bp;
-                pNb = nb;
-                pFace = face;
-                pHit = new Vec3(nb.getX() + 0.5 + face.getFrontOffsetX() * 0.5,
-                                nb.getY() + 0.5 + face.getFrontOffsetY() * 0.5,
-                                nb.getZ() + 0.5 + face.getFrontOffsetZ() * 0.5);
                 return true;
             }
         }
         return false;
     }
 
-    private void aimAt(EntityPlayerSP p, Vec3 h) {
-        double dx = h.xCoord - p.posX, dy = h.yCoord - (p.posY + p.getEyeHeight()), dz = h.zCoord - p.posZ;
-        float yaw = (float) (Math.atan2(dz, dx) * 180.0 / Math.PI) - 90f;
-        float pitch = (float) -(Math.atan2(dy, Math.hypot(dx, dz)) * 180.0 / Math.PI);
-        p.rotationYaw += MathHelper.wrapAngleTo180_float(yaw - p.rotationYaw);
-        p.rotationPitch = MathHelper.clamp_float(pitch, -90f, 90f);
+    // place only if the real ray from the eye, along the current rotation, lands on a face that fills pCell
+    private void tryPlace(EntityPlayerSP p) {
+        ItemStack st = p.getHeldItem();
+        if (st == null || !mc.theWorld.isAirBlock(pCell)) return;
+        Vec3 eye = p.getPositionEyes(1.0F);
+        Vec3 look = p.getLook(1.0F);
+        Vec3 end = eye.addVector(look.xCoord * 4.5, look.yCoord * 4.5, look.zCoord * 4.5);
+        MovingObjectPosition h = mc.theWorld.rayTraceBlocks(eye, end);
+        if (h == null || h.typeOfHit != MovingObjectPosition.MovingObjectType.BLOCK) return;
+        if (!h.getBlockPos().offset(h.sideHit).equals(pCell)) return;
+        if (mc.playerController.onPlayerRightClick(p, mc.theWorld, st, h.getBlockPos(), h.sideHit, h.hitVec)) {
+            p.swingItem();
+        }
     }
 }
