@@ -27,10 +27,10 @@ public class GodBridge {
     static final float PITCH     = 75.6f;  // FILL: tune if blocks don't land on the edge
     static final float SMOOTH    = 0.35f;  // 1.0 = instant snap
     static final float STRAFE    = -1f;    // -1 = S+D, +1 = S+A
-    static final int   JUMP_MIN  = 7;      // god bridge standard is 7-8 blocks between jumps
-    static final int   JUMP_MAX  = 8;      // inclusive
+    static final int   JUMP_MIN  = 7;      // many godbridgers jump on the 7th block, 8 is harder to time
+    static final int   JUMP_MAX  = 7;      // inclusive, set 8 for a 7-8 spread
     static final int   JUMP_HOLD = 2;      // ticks
-    static final int   PAUSE     = 4;      // ticks the XButton is released around each jump (click pause + aim reset)
+    static final int   PAUSE     = 1;      // ticks the XButton is released at each jump (1 tick = 50 ms, guides say 20-60 ms)
 
     private final Minecraft mc = Minecraft.getMinecraft();
     private final Random rnd = new Random();
@@ -96,7 +96,7 @@ public class GodBridge {
             p.rotationPitch = PITCH;
         }
 
-        // god bridge cannot run past ~8 blocks without a reset: release clicks for a moment at every jump
+        // god bridge cannot run past ~8 blocks without a reset: release clicks for ONE tick at the jump, then place mid-air
         hold(pauseTicks <= 0);
         if (pauseTicks > 0) pauseTicks--;
     }
