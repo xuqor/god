@@ -1,13 +1,12 @@
 package nu.godbridge;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.util.Random;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.entity.EntityPlayerSP;
 import net.minecraft.client.settings.GameSettings;
 import net.minecraft.item.ItemBlock;
+import net.minecraft.item.ItemStack;
 import net.minecraft.util.BlockPos;
 import net.minecraft.util.MathHelper;
 import net.minecraft.util.MovementInputFromOptions;
@@ -18,7 +17,6 @@ import net.minecraftforge.fml.common.Mod.EventHandler;
 import net.minecraftforge.fml.common.event.FMLInitializationEvent;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 import net.minecraftforge.fml.common.gameevent.TickEvent;
-import net.minecraftforge.fml.relauncher.ReflectionHelper;
 import org.lwjgl.input.Keyboard;
 
 // Hypixel/Watchdog and most anticheats flag this (rotation snap + fixed pitch + 15 CPS), use it on your own server or singleplayer
@@ -39,14 +37,10 @@ public class GodBridge {
     private boolean active;
     private float lockYaw;
     private double lastX, lastZ, travelled, clickAcc;
-    private int target, jumpTicks, bridgeY;
-    private Method rightClick;
-    private Field delayTimer;
+    private int target, jumpTicks;
 
     @EventHandler
     public void init(FMLInitializationEvent e) {
-        rightClick = ReflectionHelper.findMethod(Minecraft.class, mc, new String[]{"rightClickMouse", "func_147121_ag"});
-        delayTimer = ReflectionHelper.findField(Minecraft.class, "rightClickDelayTimer", "field_71467_ac");
         MinecraftForge.EVENT_BUS.register(this);
     }
 
@@ -77,11 +71,12 @@ public class GodBridge {
             target = nextTarget();
         }
 
-        // place only when the crosshair target is a free spot at bridge height
+        // place only on a free spot below feet level
         clickAcc += CPS / 20.0;
         if (clickAcc >= 1.0) {
-            if (canPlace(p)) {
-                click();
+            MovingObjectPosition h = placeTarget(p);
+            if (h != null) {
+                place(p, h);
                 clickAcc -= 1.0;
             } else {
                 clickAcc = 1.0;
@@ -108,28 +103,31 @@ public class GodBridge {
     private void start(EntityPlayerSP p) {
         active = true;
         lockYaw = Math.round((p.rotationYaw - 45f) / 90f) * 90f + 45f;
-        bridgeY = MathHelper.floor_double(p.posY) - 1;
         lastX = p.posX;
         lastZ = p.posZ;
         travelled = 0;
         jumpTicks = 0;
-        clickAcc = 0;
+        clickAcc = 1.0;
         target = nextTarget();
     }
 
-    private boolean canPlace(EntityPlayerSP p) {
-        if (p.getHeldItem() == null || !(p.getHeldItem().getItem() instanceof ItemBlock)) return false;
+    private MovingObjectPosition placeTarget(EntityPlayerSP p) {
+        ItemStack st = p.getHeldItem();
+        if (st == null || !(st.getItem() instanceof ItemBlock)) return null;
         MovingObjectPosition h = mc.objectMouseOver;
-        if (h == null || h.typeOfHit != MovingObjectPosition.MovingObjectType.BLOCK) return false;
+        if (h == null || h.typeOfHit != MovingObjectPosition.MovingObjectType.BLOCK) return null;
         BlockPos pos = h.getBlockPos().offset(h.sideHit);
-        return pos.getY() == bridgeY && mc.theWorld.isAirBlock(pos);
+        int feet = MathHelper.floor_double(p.posY);
+        if (pos.getY() > feet - 1 || pos.getY() < feet - 2) return null;
+        if (!mc.theWorld.isAirBlock(pos)) return null;
+        return h;
     }
 
-    private void click() {
-        try {
-            delayTimer.setInt(mc, 0);
-            rightClick.invoke(mc);
-        } catch (Exception ignored) {
+    // same call vanilla rightClickMouse makes, no reflection
+    private void place(EntityPlayerSP p, MovingObjectPosition h) {
+        ItemStack st = p.getHeldItem();
+        if (mc.playerController.onPlayerRightClick(p, mc.theWorld, st, h.getBlockPos(), h.sideHit, h.hitVec)) {
+            p.swingItem();
         }
     }
 
