@@ -57,6 +57,12 @@ public class GodBridge {
     private float camYaw, camPitch, setYaw, setPitch;
     private float gYaw, gPitch;
 
+    // the click for tick N+1 goes out at the START of that tick (before its movement packet, like vanilla), judged against
+    // the rotation and position of the last movement packet the server got
+    private float sentYaw, sentPitch;
+    private boolean placeNext, placeUrgent;
+    private int plMx, plMz;
+
     @EventHandler
     public void init(FMLInitializationEvent e) {
         key = new KeyBinding("Telly bridge (hold)", Keyboard.KEY_C, "GodBridge");
@@ -76,7 +82,13 @@ public class GodBridge {
         }
 
         if (e.phase == TickEvent.Phase.START) {
-            if (silent) captureMouse(p); // mouse moved the entity between ticks: move that into the free camera instead
+            if (silent) {
+                if (placeNext) {
+                    placeNext = false;
+                    tryPlace(p, plMx, plMz, placeUrgent);
+                }
+                captureMouse(p); // mouse moved the entity between ticks: move that into the free camera instead
+            }
             return;
         }
 
@@ -121,6 +133,10 @@ public class GodBridge {
             else mz = land.getZ();
         }
 
+        sentYaw = setYaw;   // this is what the movement packet of this tick carried
+        sentPitch = setPitch;
+        placeNext = false;
+
         if (p.onGround || landing) {
             // ground / about to land on solid bridge: look forward, no placing
             rotateToward(laneYaw, fwdPitch, false);
@@ -128,8 +144,11 @@ public class GodBridge {
         } else if (airTicks <= rotDelay && !urgent) {
             rotateToward(laneYaw, fwdPitch, false);
         } else {
-            // airborne: click what the rotation the server already has points at, then aim at the next block
-            tryPlace(p, mx, mz, urgent);
+            // airborne: the click for the rotation the server already has goes out at the start of the next tick, then aim at the next block
+            placeNext = true;
+            plMx = mx;
+            plMz = mz;
+            placeUrgent = urgent;
             if (findTarget(p, mx, mz, urgent)) rotateToward(gYaw, gPitch, urgent);
             else rotateToward(laneYaw + 180f, BACK_PITCH, urgent);
         }
@@ -184,10 +203,12 @@ public class GodBridge {
         camYaw = setYaw = p.rotationYaw;
         camPitch = setPitch = p.rotationPitch;
         airTicks = 0;
+        placeNext = false;
         silent = true;
     }
 
     private void endSilent(EntityPlayerSP p) {
+        placeNext = false;
         captureMouse(p);
         p.rotationYaw = p.prevRotationYaw = camYaw;
         p.rotationPitch = p.prevRotationPitch = MathHelper.clamp_float(camPitch, -90f, 90f);
@@ -322,7 +343,7 @@ public class GodBridge {
         if (legit && !urgent && rnd.nextFloat() < SKIP) return;
         ItemStack st = p.getHeldItem();
         if (st == null) return;
-        MovingObjectPosition h = ray(p.posX, p.posY + p.getEyeHeight(), p.posZ, setYaw, setPitch);
+        MovingObjectPosition h = ray(p.posX, p.posY + p.getEyeHeight(), p.posZ, sentYaw, sentPitch);
         if (h == null) return;
         BlockPos cell = h.getBlockPos().offset(h.sideHit);
         if (!mc.theWorld.isAirBlock(cell) || !isLaneCell(cell, mx, mz)) return;
