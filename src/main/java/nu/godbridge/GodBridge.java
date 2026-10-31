@@ -6,11 +6,12 @@ import java.util.Random;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.entity.EntityPlayerSP;
+import net.minecraft.client.settings.GameSettings;
 import net.minecraft.item.ItemBlock;
 import net.minecraft.util.BlockPos;
 import net.minecraft.util.MathHelper;
+import net.minecraft.util.MovementInputFromOptions;
 import net.minecraft.util.MovingObjectPosition;
-import net.minecraftforge.client.event.InputUpdateEvent;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.common.Mod.EventHandler;
@@ -54,6 +55,7 @@ public class GodBridge {
         if (e.phase != TickEvent.Phase.END) return;
 
         EntityPlayerSP p = mc.thePlayer;
+        if (p != null && !(p.movementInput instanceof AutoInput)) p.movementInput = new AutoInput(mc.gameSettings);
         boolean want = p != null && mc.theWorld != null && mc.currentScreen == null && Keyboard.isKeyDown(KEY);
 
         if (want && !active) start(p);
@@ -87,13 +89,20 @@ public class GodBridge {
         }
     }
 
-    // movement is forced on the input object itself, keybinds are not touched
-    @SubscribeEvent
-    public void input(InputUpdateEvent e) {
-        if (!active) return;
-        e.movementInput.moveForward = -1f;
-        e.movementInput.moveStrafe = STRAFE;
-        if (jumpTicks > 0) e.movementInput.jump = true;
+    // own MovementInput on the player: vanilla update first, then override while active
+    private class AutoInput extends MovementInputFromOptions {
+        AutoInput(GameSettings gs) {
+            super(gs);
+        }
+
+        @Override
+        public void updatePlayerMoveState() {
+            super.updatePlayerMoveState();
+            if (!active) return;
+            moveForward = -1f;
+            moveStrafe = STRAFE;
+            if (jumpTicks > 0) jump = true;
+        }
     }
 
     private void start(EntityPlayerSP p) {
