@@ -30,6 +30,7 @@ public class GodBridge {
     static final int   JUMP_MIN  = 7;      // god bridge standard is 7-8 blocks between jumps
     static final int   JUMP_MAX  = 8;      // inclusive
     static final int   JUMP_HOLD = 2;      // ticks
+    static final int   PAUSE     = 4;      // ticks the XButton is released around each jump (click pause + aim reset)
 
     private final Minecraft mc = Minecraft.getMinecraft();
     private final Random rnd = new Random();
@@ -41,7 +42,7 @@ public class GodBridge {
     private boolean active;
     private float lockYaw;
     private double lastX, lastZ, travelled;
-    private int target, jumpTicks;
+    private int target, jumpTicks, pauseTicks;
 
     @EventHandler
     public void init(FMLInitializationEvent e) {
@@ -71,8 +72,10 @@ public class GodBridge {
 
         if (want && !active) start(p);
         else if (!want && active) active = false;
-        hold(active);
-        if (!active) return;
+        if (!active) {
+            hold(false);
+            return;
+        }
 
         // aim: nearest diagonal yaw, fixed pitch, smoothed
         p.rotationYaw += MathHelper.wrapAngleTo180_float(lockYaw - p.rotationYaw) * SMOOTH;
@@ -85,9 +88,17 @@ public class GodBridge {
         lastZ = p.posZ;
         if (travelled >= target) {
             jumpTicks = JUMP_HOLD;
+            pauseTicks = PAUSE;
             travelled = 0;
             target = nextTarget();
+            // aim reset: back on the exact angles for the landing
+            p.rotationYaw += MathHelper.wrapAngleTo180_float(lockYaw - p.rotationYaw);
+            p.rotationPitch = PITCH;
         }
+
+        // god bridge cannot run past ~8 blocks without a reset: release clicks for a moment at every jump
+        hold(pauseTicks <= 0);
+        if (pauseTicks > 0) pauseTicks--;
     }
 
     // own MovementInput on the player: vanilla update first, then override while active
@@ -113,6 +124,7 @@ public class GodBridge {
         lastZ = p.posZ;
         travelled = 0;
         jumpTicks = 0;
+        pauseTicks = 0;
         target = nextTarget();
     }
 
