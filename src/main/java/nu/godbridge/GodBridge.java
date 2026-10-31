@@ -41,12 +41,20 @@ public class GodBridge {
     static final float  EASE_MAX   = 0.95f;
     static final float  SKIP       = 0.08f;  // chance to skip a ready placement (not when landing is at risk)
     static final double AIM_SPREAD = 0.15;   // random aim offset inside the face (blocks, +-), only points whose ray really hits are used
+    static final double LOOK       = 0.15;   // moonwalk/breezily edge stop: extra lookahead (blocks) on top of momentum
+    static final double BREEZE_AMP = 0.22;   // breezily: lateral swing (blocks) before the strafe flips
     static final int    ROT_DELAY  = 1;      // 0..N ticks after take-off before the camera turns back (human-ish), never when landing is at risk
 
     private final Minecraft mc = Minecraft.getMinecraft();
     private final Random rnd = new Random();
 
     private KeyBinding key;       // rebind in Options > Controls > GodBridge
+    private KeyBinding ninjaKey;  // sneak-walk along the lane, can't fall off
+    private KeyBinding moonKey;   // walk backwards, stop at the edge
+    private KeyBinding breezeKey; // walk backwards zigzagging, stop at the edge
+    private int mode;             // 0 off, 1 telly, 2 ninja, 3 moonwalk, 4 breezily
+    private int latCell, zig = 1;
+    private double latC;
     private KeyBinding legitKey;  // unbound by default, toggles the anticheat-friendly rotation profile in game
     private boolean wasWant, silent;
     private boolean legit;        // false: exact aim every tick (reliable). true: eased, limited, jittered, GCD-snapped rotations
@@ -67,6 +75,12 @@ public class GodBridge {
     public void init(FMLInitializationEvent e) {
         key = new KeyBinding("Telly bridge (hold)", Keyboard.KEY_C, "GodBridge");
         ClientRegistry.registerKeyBinding(key);
+        ninjaKey = new KeyBinding("Ninja bridge (hold)", Keyboard.KEY_V, "GodBridge");
+        ClientRegistry.registerKeyBinding(ninjaKey);
+        moonKey = new KeyBinding("Moonwalk bridge (hold)", Keyboard.KEY_B, "GodBridge");
+        ClientRegistry.registerKeyBinding(moonKey);
+        breezeKey = new KeyBinding("Breezily bridge (hold)", Keyboard.KEY_N, "GodBridge");
+        ClientRegistry.registerKeyBinding(breezeKey);
         legitKey = new KeyBinding("Legit rotations (toggle)", Keyboard.KEY_NONE, "GodBridge");
         ClientRegistry.registerKeyBinding(legitKey);
         MinecraftForge.EVENT_BUS.register(this);
@@ -97,7 +111,10 @@ public class GodBridge {
             p.addChatMessage(new ChatComponentText("[Telly] legit rotations: " + (legit ? "ON" : "OFF")));
         }
         if (!(p.movementInput instanceof TellyInput)) p.movementInput = new TellyInput(mc.gameSettings);
-        boolean want = mc.currentScreen == null && key.isKeyDown();
+        boolean tellyDown = key.isKeyDown(), ninjaDown = ninjaKey.isKeyDown();
+        boolean moonDown = moonKey.isKeyDown(), breezeDown = breezeKey.isKeyDown();
+        boolean want = mc.currentScreen == null && (tellyDown || ninjaDown || moonDown || breezeDown);
+        mode = tellyDown ? 1 : ninjaDown ? 2 : moonDown ? 3 : breezeDown ? 4 : 0;
         if (want && !wasWant) start(p);
         wasWant = want;
 
@@ -131,6 +148,30 @@ public class GodBridge {
         if (land != null && ax * land.getX() + az * land.getZ() > ax * cx + az * cz) {
             if (ax != 0) mx = land.getX();
             else mz = land.getZ();
+        }
+
+        // the bridge stays in the column it started in
+        if (ax != 0) {
+            cz = latCell;
+            mz = latCell;
+        } else {
+            cx = latCell;
+            mx = latCell;
+        }
+
+        if (mode >= 2) {
+            // ninja / moonwalk / breezily: walk along the lane looking back at the end block's front face, click every tick the ray is valid
+            sentYaw = setYaw;
+            sentPitch = setPitch;
+            p.setSprinting(false);
+            placeNext = true;
+            plMx = cx;
+            plMz = cz;
+            placeUrgent = false;
+            if (findTarget(p, cx, cz, false)) rotateToward(gYaw, gPitch, false);
+            else rotateToward(laneYaw + 180f, BACK_PITCH, false);
+            apply(p);
+            return;
         }
 
         sentYaw = setYaw;   // this is what the movement packet of this tick carried
@@ -168,10 +209,43 @@ public class GodBridge {
             EntityPlayerSP p = mc.thePlayer;
             if (p == null) return;
             double r = Math.toRadians(p.rotationYaw), s = Math.sin(r), c = Math.cos(r);
-            moveForward = (float) (-ax * s + az * c);
-            moveStrafe = (float) (ax * c + az * s);
+            double dx = ax, dz = az;
+            if (mode >= 2) {
+                // lateral offset from the bridge column centre, lateral unit vector (ux, uz)
+                double off = (ax != 0 ? p.posZ : p.posX) - latC;
+                double ux = ax != 0 ? 0 : 1, uz = ax != 0 ? 1 : 0;
+                double lat;
+                if (mode == 4) {               // breezily: zigzag around the column centre
+                    if (off > BREEZE_AMP) zig = -1;
+                    else if (off < -BREEZE_AMP) zig = 1;
+                    lat = zig;
+                } else {                       // ninja / moonwalk: straight, gently pulled to the centre
+                    lat = Math.max(-0.5, Math.min(0.5, -off * 3.0));
+                }
+                double n = Math.sqrt(1 + lat * lat);
+                dx = (ax + lat * ux) / n;
+                dz = (az + lat * uz) / n;
+            }
+            moveForward = (float) (-dx * s + dz * c);
+            moveStrafe = (float) (dx * c + dz * s);
+            if (mode == 2) {                   // ninja: real sneak, vanilla slowdown, vanilla safewalk
+                moveForward *= 0.3f;
+                moveStrafe *= 0.3f;
+                sneak = true;
+                return;
+            }
             sneak = false;
-            if (p.onGround) jump = true;
+            if (mode == 1) {                   // telly: sprint-jump
+                if (p.onGround) jump = true;
+                return;
+            }
+            // moonwalk / breezily: walking, not sneaking, so stop where the floor ends
+            if (p.onGround && !supported(p, dx * LOOK + p.motionX, dz * LOOK + p.motionZ, 1.0)) {
+                moveForward = 0f;
+                moveStrafe = 0f;
+                p.motionX = 0;
+                p.motionZ = 0;
+            }
         }
     }
 
@@ -197,6 +271,9 @@ public class GodBridge {
         az = d.getFrontOffsetZ();
         laneYaw = f * 90f;
         bridgeY = MathHelper.floor_double(p.posY) - 1;
+        latCell = ax != 0 ? MathHelper.floor_double(p.posZ) : MathHelper.floor_double(p.posX);
+        latC = latCell + 0.5;
+        zig = 1;
     }
 
     private void beginSilent(EntityPlayerSP p) {
@@ -263,6 +340,11 @@ public class GodBridge {
             vy = (vy - 0.08) * 0.98;
         }
         return new BlockPos(MathHelper.floor_double(x), bridgeY, MathHelper.floor_double(z));
+    }
+
+    // true if the player's box, shifted by (dx, -drop, dz), still collides with something (same test vanilla sneak uses at edges)
+    private boolean supported(EntityPlayerSP p, double dx, double dz, double drop) {
+        return !mc.theWorld.getCollidingBoundingBoxes(p, p.getEntityBoundingBox().offset(dx, -drop, dz)).isEmpty();
     }
 
     private boolean isLaneCell(BlockPos bp, int mx, int mz) {
