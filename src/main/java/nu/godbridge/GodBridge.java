@@ -27,7 +27,7 @@ public class GodBridge {
     static final float PITCH     = 75.6f;  // FILL: tune if blocks don't land on the edge
     static final float SMOOTH    = 0.35f;  // 1.0 = instant snap
     static final float STRAFE    = -1f;    // -1 = S+D, +1 = S+A
-    static final int   JUMP_MIN  = 6;
+    static final int   JUMP_MIN  = 7;      // god bridge standard is 7-8 blocks between jumps
     static final int   JUMP_MAX  = 8;      // inclusive
     static final int   JUMP_HOLD = 2;      // ticks
 
@@ -78,7 +78,7 @@ public class GodBridge {
         p.rotationYaw += MathHelper.wrapAngleTo180_float(lockYaw - p.rotationYaw) * SMOOTH;
         p.rotationPitch += (PITCH - p.rotationPitch) * SMOOTH;
 
-        // jump every 6-8 blocks walked
+        // jump every 7-8 blocks walked
         if (jumpTicks > 0) jumpTicks--;
         travelled += Math.hypot(p.posX - lastX, p.posZ - lastZ);
         lastX = p.posX;
