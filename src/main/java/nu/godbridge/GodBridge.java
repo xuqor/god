@@ -9,6 +9,7 @@ import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.item.ItemBlock;
 import net.minecraft.item.ItemStack;
 import net.minecraft.util.BlockPos;
+import net.minecraft.util.ChatComponentText;
 import net.minecraft.util.EnumFacing;
 import net.minecraft.util.MathHelper;
 import net.minecraft.util.MovementInputFromOptions;
@@ -45,8 +46,10 @@ public class GodBridge {
     private final Minecraft mc = Minecraft.getMinecraft();
     private final Random rnd = new Random();
 
-    private KeyBinding key;   // rebind in Options > Controls > GodBridge
+    private KeyBinding key;       // rebind in Options > Controls > GodBridge
+    private KeyBinding legitKey;  // unbound by default, toggles the anticheat-friendly rotation profile in game
     private boolean wasWant, silent;
+    private boolean legit;        // false: exact aim every tick (reliable). true: eased, limited, jittered, GCD-snapped rotations
     private int ax, az, bridgeY, airTicks, rotDelay;
     private float laneYaw;
 
@@ -58,6 +61,8 @@ public class GodBridge {
     public void init(FMLInitializationEvent e) {
         key = new KeyBinding("Telly bridge (hold)", Keyboard.KEY_C, "GodBridge");
         ClientRegistry.registerKeyBinding(key);
+        legitKey = new KeyBinding("Legit rotations (toggle)", Keyboard.KEY_NONE, "GodBridge");
+        ClientRegistry.registerKeyBinding(legitKey);
         MinecraftForge.EVENT_BUS.register(this);
     }
 
@@ -75,6 +80,10 @@ public class GodBridge {
             return;
         }
 
+        while (legitKey.isPressed()) {
+            legit = !legit;
+            p.addChatMessage(new ChatComponentText("[Telly] legit rotations: " + (legit ? "ON" : "OFF")));
+        }
         if (!(p.movementInput instanceof TellyInput)) p.movementInput = new TellyInput(mc.gameSettings);
         boolean want = mc.currentScreen == null && key.isKeyDown();
         if (want && !wasWant) start(p);
@@ -92,7 +101,7 @@ public class GodBridge {
 
         if (p.onGround) {
             airTicks = 0;
-            rotDelay = rnd.nextInt(ROT_DELAY + 1);
+            rotDelay = legit ? rnd.nextInt(ROT_DELAY + 1) : 0;
         } else {
             airTicks++;
         }
@@ -213,6 +222,7 @@ public class GodBridge {
     }
 
     private float quant(float d, float max, float g, boolean fast) {
+        if (!legit) return d; // exact: land on the aim every tick, a missed face costs a block
         float ease = fast ? 1f : EASE_MIN + rnd.nextFloat() * (EASE_MAX - EASE_MIN);
         float lim = max * (fast ? 2f : 0.8f + rnd.nextFloat() * 0.4f);
         float want = MathHelper.clamp_float(d * ease, -lim, lim);
@@ -277,7 +287,7 @@ public class GodBridge {
                 if (mc.theWorld.isAirBlock(nb) || mc.theWorld.getBlockState(nb).getBlock().getMaterial().isLiquid()) continue;
                 EnumFacing face = f.getOpposite(); // face of the neighbour that touches bp
                 for (int a = 0; a < 5; a++) {
-                    double sp = (a < 4 && !urgent) ? AIM_SPREAD : 0; // the last attempt (and urgent) aims at the centre
+                    double sp = (legit && a < 4 && !urgent) ? AIM_SPREAD : 0; // the last attempt (and urgent) aims at the centre
                     double hx = nb.getX() + 0.5 + face.getFrontOffsetX() * 0.5 + (face.getFrontOffsetX() == 0 ? (rnd.nextDouble() * 2 - 1) * sp : 0);
                     double hy = nb.getY() + 0.5 + face.getFrontOffsetY() * 0.5 + (face.getFrontOffsetY() == 0 ? (rnd.nextDouble() * 2 - 1) * sp : 0);
                     double hz = nb.getZ() + 0.5 + face.getFrontOffsetZ() * 0.5 + (face.getFrontOffsetZ() == 0 ? (rnd.nextDouble() * 2 - 1) * sp : 0);
@@ -309,7 +319,7 @@ public class GodBridge {
 
     // click only if the real ray along the rotation the server already has hits a face that fills a lane cell
     private void tryPlace(EntityPlayerSP p, int mx, int mz, boolean urgent) {
-        if (!urgent && rnd.nextFloat() < SKIP) return;
+        if (legit && !urgent && rnd.nextFloat() < SKIP) return;
         ItemStack st = p.getHeldItem();
         if (st == null) return;
         MovingObjectPosition h = ray(p.posX, p.posY + p.getEyeHeight(), p.posZ, setYaw, setPitch);
